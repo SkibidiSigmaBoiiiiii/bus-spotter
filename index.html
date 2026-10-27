@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="pl" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bus Spotter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { darkMode: 'class' }
+    </script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <style>
+        body { -webkit-tap-highlight-color: transparent; }
+        #map { height: 150px; border-radius: 0.5rem; z-index: 1; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans min-h-screen pb-24">
+
+    <!-- Header -->
+    <header class="bg-gray-800 p-4 shadow-md sticky top-0 z-30 flex justify-between items-center">
+        <h1 class="text-xl font-bold text-blue-400">🚍 Bus Spotter</h1>
+        <button onclick="changeApiKey()" title="Ustawienia klucza" class="text-gray-400 hover:text-white p-2 text-lg">
+            🔑
+        </button>
+    </header>
+
+    <main class="p-4 max-w-md mx-auto">
+        
+        <section id="form-view">
+            <div class="bg-gray-800 p-4 rounded-xl shadow-lg border border-gray-700">
+                <form id="spot-form" class="space-y-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Nr Taborowy *</label>
+                        <input type="text" id="bus_number" required maxlength="15" autocomplete="off" class="w-full bg-gray-700 p-3 rounded-lg text-white outline-none focus:ring-2 focus:ring-blue-500 text-lg" placeholder="np. 01">
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Linia *</label>
+                            <input type="text" id="line" required maxlength="15" autocomplete="off" class="w-full bg-gray-700 p-3 rounded-lg text-white outline-none focus:ring-2 focus:ring-blue-500 text-lg" placeholder="np. ZP">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Brygada</label>
+                            <input type="text" id="brigade" maxlength="10" autocomplete="off" class="w-full bg-gray-700 p-3 rounded-lg text-white outline-none focus:ring-2 focus:ring-blue-500 text-lg" placeholder="np. 1">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Data i Czas</label>
+                        <input type="datetime-local" id="datetime" required class="w-full bg-gray-700 p-3 rounded-lg text-white outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Lokalizacja</label>
+                        <div id="map" class="w-full bg-gray-700 flex items-center justify-center text-gray-400 text-xs text-center p-2">Pobieranie lokalizacji GPS...</div>
+                        <input type="hidden" id="lat">
+                        <input type="hidden" id="lon">
+                    </div>
+                    <button type="submit" id="submit-btn" class="w-full bg-blue-600 active:bg-blue-700 hover:bg-blue-500 text-white font-bold py-4 rounded-lg text-lg transition duration-150 shadow-md">
+                        Zapisz Spota!
+                    </button>
+                </form>
+            </div>
+        </section>
+
+        <section id="stats-view" class="hidden">
+            <div class="bg-gray-800 p-4 rounded-xl shadow-lg border border-gray-700">
+                <input type="text" id="search" placeholder="Szukaj po numerze taborowym..." class="w-full bg-gray-700 p-3 rounded-lg text-white mb-4 outline-none focus:ring-2 focus:ring-blue-500">
+                <div id="stats-content" class="space-y-4">
+                    <p class="text-center text-gray-400">Ładowanie danych...</p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <nav class="fixed bottom-0 w-full bg-gray-800 border-t border-gray-700 flex justify-around p-2 pb-5 z-20">
+        <button id="nav-btn-form" onclick="switchTab('form')" class="flex flex-col items-center text-blue-400 font-medium p-2">
+            <span class="text-xl">📍</span> <span class="text-xs mt-1">Dodaj</span>
+        </button>
+        <button id="nav-btn-stats" onclick="switchTab('stats')" class="flex flex-col items-center text-gray-400 font-medium p-2">
+            <span class="text-xl">📊</span> <span class="text-xs mt-1">Statystyki</span>
+        </button>
+    </nav>
+
+    <script>
+        const GAS_URL = "https://script.google.com/macros/s/AKfycbxvNqHBrDs3FWFsqpUY_DcfGyU_S5aETWt7lloraQXV3NvUWo8jvuzpZAbjIHPFe_H6/exec";
+        
+        let map, marker;
+        let busData = [];
+
+        function getApiKey() {
+            let key = localStorage.getItem('spotter_api_key');
+            while (!key || key.trim() === "") {
+                key = prompt("Podaj swój prywatny klucz dostępu (hasło do API):");
+                if (key) {
+                    key = key.trim();
+                    localStorage.setItem('spotter_api_key', key);
+                }
+            }
+            return key;
+        }
+
+        function changeApiKey() {
+            const current = localStorage.getItem('spotter_api_key') || '';
+            const newKey = prompt("Zmień klucz dostępu:", current);
+            if (newKey !== null && newKey.trim() !== '') {
+                localStorage.setItem('spotter_api_key', newKey.trim());
+                alert("Klucz został zaktualizowany.");
+            }
+        }
+
+        function escapeHtml(str) {
+            if (!str && str !== 0) return '';
+            return String(str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        function setNow() {
+            const now = new Date();
+            now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+            document.getElementById('datetime').value = now.toISOString().slice(0, 16);
+        }
+        setNow();
+
+        function switchTab(tab) {
+            const formTab = document.getElementById('form-view');
+            const statsTab = document.getElementById('stats-view');
+            const navForm = document.getElementById('nav-btn-form');
+            const navStats = document.getElementById('nav-btn-stats');
+
+            if (tab === 'form') {
+                formTab.classList.remove('hidden');
+                statsTab.classList.add('hidden');
+                navForm.className = "flex flex-col items-center text-blue-400 font-medium p-2";
+                navStats.className = "flex flex-col items-center text-gray-400 font-medium p-2";
+            } else {
+                formTab.classList.add('hidden');
+                statsTab.classList.remove('hidden');
+                navForm.className = "flex flex-col items-center text-gray-400 font-medium p-2";
+                navStats.className = "flex flex-col items-center text-blue-400 font-medium p-2";
+                fetchStats();
+            }
+        }
+
+        function initMap() {
+            if ("geolocation" in navigator) {
+                navigator.geolocation.getCurrentPosition(position => {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    
+                    document.getElementById('lat').value = lat;
+                    document.getElementById('lon').value = lon;
+
+                    document.getElementById('map').innerHTML = "";
+                    map = L.map('map').setView([lat, lon], 15);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: '© OpenStreetMap'
+                    }).addTo(map);
+                    marker = L.marker([lat, lon]).addTo(map);
+                }, () => {
+                    document.getElementById('map').innerHTML = "Lokalizacja niedostępna (zapis bez GPS)";
+                }, { enableHighAccuracy: true, timeout: 7000 });
+            }
+        }
+        initMap();
+
+        document.getElementById('spot-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('submit-btn');
+            btn.innerText = "Zapisywanie...";
+            btn.disabled = true;
+
+            const payload = {
+                key: getApiKey(),
+                bus_number: document.getElementById('bus_number').value,
+                line: document.getElementById('line').value,
+                brigade: document.getElementById('brigade').value,
+                datetime: document.getElementById('datetime').value,
+                lat: document.getElementById('lat').value,
+                lon: document.getElementById('lon').value
+            };
+
+            try {
+                const res = await fetch(GAS_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify(payload)
+                });
+                
+                const response = await res.json();
+                
+                if (response.status === "unauthorized") {
+                    alert("Odmowa dostępu! Błędny klucz autoryzacji.");
+                    localStorage.removeItem('spotter_api_key');
+                } else if (response.status === "success") {
+                    alert("Spot został zapisany!");
+                    document.getElementById('spot-form').reset();
+                    setNow();
+                } else {
+                    alert("Błąd: " + (response.message || "Nieznany błąd"));
+                }
+            } catch (err) {
+                alert("Wystąpił problem z połączeniem z serwerem.");
+            } finally {
+                btn.innerText = "Zapisz Spota!";
+                btn.disabled = false;
+            }
+        });
+
+        async function fetchStats() {
+            const container = document.getElementById('stats-content');
+            container.innerHTML = "<p class='text-center text-gray-400'>Pobieranie danych...</p>";
+            
+            try {
+                const key = getApiKey();
+                const response = await fetch(`${GAS_URL}?key=${encodeURIComponent(key)}`);
+                const data = await response.json();
+                
+                if (data.status === "unauthorized") {
+                    container.innerHTML = "<p class='text-red-400 text-center'>Brak uprawnień. Zły klucz dostępu.</p>";
+                    localStorage.removeItem('spotter_api_key');
+                    return;
+                }
+                
+                busData = Array.isArray(data) ? data : [];
+                renderStats(busData);
+            } catch (err) {
+                container.innerHTML = "<p class='text-red-400 text-center'>Błąd podczas pobierania danych.</p>";
+            }
+        }
+
+        function renderStats(data) {
+            const container = document.getElementById('stats-content');
+            const searchVal = document.getElementById('search').value.toLowerCase().trim();
+            
+            container.innerHTML = "";
+
+            let filteredData = data.filter(row => row.Nr_Taborowy && String(row.Nr_Taborowy).toLowerCase().includes(searchVal));
+
+            if(filteredData.length === 0) {
+                container.innerHTML = "<p class='text-gray-400 text-center py-4'>Brak pasujących wpisów.</p>";
+                return;
+            }
+
+            const buses = {};
+            filteredData.forEach(row => {
+                const nr = row.Nr_Taborowy;
+                if(!buses[nr]) buses[nr] = [];
+                buses[nr].push(row);
+            });
+
+            for (const [nr, history] of Object.entries(buses)) {
+                history.sort((a, b) => new Date(b.Data_Czas) - new Date(a.Data_Czas));
+                
+                const linesCount = {};
+                history.forEach(h => {
+                    const l = h.Linia;
+                    if(l) linesCount[l] = (linesCount[l] || 0) + 1;
+                });
+                
+                const uniqueLines = Object.keys(linesCount);
+                let mainLine = "Brak";
+                let linesFormat = "Brak";
+                
+                if (uniqueLines.length > 0) {
+                    mainLine = Object.keys(linesCount).reduce((a, b) => linesCount[a] > linesCount[b] ? a : b);
+                    const remainingLinesCount = uniqueLines.length - 1;
+                    linesFormat = remainingLinesCount > 0 ? `${mainLine}+${remainingLinesCount}` : mainLine;
+                }
+
+                const model = history.find(h => h.Model)?.Model || 'Autobus';
+                
+                const timelineHtml = history.slice(0, 3).map(h => {
+                    const dateObj = new Date(h.Data_Czas);
+                    const dateStr = isNaN(dateObj) ? escapeHtml(h.Data_Czas) : `${dateObj.toLocaleDateString()} ${dateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`;
+                    return `<li class="text-xs text-gray-400 mb-1">🕒 ${dateStr} | Linia: <span class="text-white font-medium">${escapeHtml(h.Linia)}</span> (Bryg: ${escapeHtml(h.Brygada || '-')})</li>`;
+                }).join('');
+
+                const cardHtml = `
+                    <div class="bg-gray-700/60 p-4 rounded-lg border-l-4 border-blue-500 shadow">
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 class="text-xl font-bold text-white">#${escapeHtml(nr)}</h3>
+                            <span class="text-xs bg-blue-600/80 text-blue-100 px-2 py-0.5 rounded font-medium">${escapeHtml(model)}</span>
+                        </div>
+                        <p class="text-sm text-gray-300 mb-2">Obsłużone linie: <strong class="text-white">${escapeHtml(linesFormat)}</strong> (Główna: ${escapeHtml(mainLine)})</p>
+                        <div class="mt-2 border-t border-gray-600/60 pt-2">
+                            <p class="text-xs text-gray-400 mb-1 font-semibold">Ostatnie wpisy:</p>
+                            <ul>${timelineHtml}</ul>
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += cardHtml;
+            }
+        }
+
+        document.getElementById('search').addEventListener('input', () => renderStats(busData));
+
+        getApiKey();
+    </script>
+</body>
+</html>
